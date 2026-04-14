@@ -1,0 +1,48 @@
+services:
+  etcd:
+    image: gcr.io/etcd-development/etcd:v3.5.0
+    container_name: etcd
+    command: [ "/usr/local/bin/etcd", "--advertise-client-urls=http://0.0.0.0:2379", "--listen-client-urls=http://0.0.0.0:2379" ]
+    ports:
+      - "2379:2379"
+
+  pg-master:
+    image: postgres:16
+    container_name: pg-master
+    environment:
+      POSTGRES_USER: myuser
+      POSTGRES_PASSWORD: mypassword
+      POSTGRES_DB: ecommerce_db
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U myuser -d ecommerce_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  pg-replica:
+    image: postgres:16
+    container_name: pg-replica
+    environment:
+      POSTGRES_USER: myuser
+      POSTGRES_PASSWORD: mypassword
+      POSTGRES_DB: ecommerce_db
+      PGPASSWORD: replpass # Ajout du mot de passe pour pg_basebackup
+    command: >
+      bash -c "
+      until pg_isready -h pg-master -U myuser -d ecommerce_db; do sleep 2; done;
+      if [ ! -s /var/lib/postgresql/data/PG_VERSION ]; then
+        rm -rf /var/lib/postgresql/data/*;
+        pg_basebackup -h pg-master -D /var/lib/postgresql/data -U replicator -vP -X stream -R;
+      fi;
+      docker-entrypoint.sh postgres"
+    depends_on:
+      pg-master:
+        condition: service_healthy
+
+  haproxy:
+    image: haproxy:latest
+    container_name: haproxy
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
