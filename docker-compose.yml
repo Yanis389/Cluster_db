@@ -1,48 +1,50 @@
 services:
   etcd:
-    image: gcr.io/etcd-development/etcd:v3.5.0
-    container_name: etcd
-    command: [ "/usr/local/bin/etcd", "--advertise-client-urls=http://0.0.0.0:2379", "--listen-client-urls=http://0.0.0.0:2379" ]
-    ports:
-      - "2379:2379"
-
-  pg-master:
-    image: postgres:16
-    container_name: pg-master
+    image: public.ecr.aws/bitnami/etcd:3.5
+    container_name: etcd-server
     environment:
-      POSTGRES_USER: myuser
-      POSTGRES_PASSWORD: mypassword
-      POSTGRES_DB: ecommerce_db
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U myuser -d ecommerce_db"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
+      - ALLOW_NONE_AUTHENTICATION=yes
+      - ETCD_ADVERTISE_CLIENT_URLS=http://etcd-server:2379
 
-  pg-replica:
-    image: postgres:16
-    container_name: pg-replica
+  pg-node1: &pg_config
+    image: registry.opensource.zalan.do/acid/spilo-14:2.1-p6
+    container_name: pg-node1
     environment:
-      POSTGRES_USER: myuser
-      POSTGRES_PASSWORD: mypassword
-      POSTGRES_DB: ecommerce_db
-      PGPASSWORD: replpass # Ajout du mot de passe pour pg_basebackup
-    command: >
-      bash -c "
-      until pg_isready -h pg-master -U myuser -d ecommerce_db; do sleep 2; done;
-      if [ ! -s /var/lib/postgresql/data/PG_VERSION ]; then
-        rm -rf /var/lib/postgresql/data/*;
-        pg_basebackup -h pg-master -D /var/lib/postgresql/data -U replicator -vP -X stream -R;
-      fi;
-      docker-entrypoint.sh postgres"
+      # On passe TOUTE la config en une seule ligne JSON propre
+      - PATRONI_CONFIGURATION={"etcd3":{"hosts":["etcd-server:2379"]},"scope":"ecommerce","name":"node1","postgresql":{"listen":"0.0.0.0:5432","connect_address":"pg-node1:5432"}}
+      - PATRONI_SUPERUSER_PASSWORD=postgrespass
+      - PATRONI_REPLICATION_USERNAME=replicator
+      - PATRONI_REPLICATION_PASSWORD=replpass
     depends_on:
-      pg-master:
-        condition: service_healthy
+      - etcd
+
+  pg-node2:
+    <<: *pg_config
+    container_name: pg-node2
+    environment:
+      - PATRONI_CONFIGURATION={"etcd3":{"hosts":["etcd-server:2379"]},"scope":"ecommerce","name":"node2","postgresql":{"listen":"0.0.0.0:5432","connect_address":"pg-node2:5432"}}
+      - PATRONI_SUPERUSER_PASSWORD=postgrespass
+      - PATRONI_REPLICATION_USERNAME=replicator
+      - PATRONI_REPLICATION_PASSWORD=replpass
+
+  pg-node3:
+    <<: *pg_config
+    container_name: pg-node3
+    environment:
+      - PATRONI_CONFIGURATION={"etcd3":{"hosts":["etcd-server:2379"]},"scope":"ecommerce","name":"node3","postgresql":{"listen":"0.0.0.0:5432","connect_address":"pg-node3:5432"}}
+      - PATRONI_SUPERUSER_PASSWORD=postgrespass
+      - PATRONI_REPLICATION_USERNAME=replicator
+      - PATRONI_REPLICATION_PASSWORD=replpass
 
   haproxy:
-    image: haproxy:latest
+    image: public.ecr.aws/docker/library/haproxy:2.4-alpine
     container_name: haproxy
     ports:
-      - "5432:5432"
+      - "5000:5000"
+      - "5001:5001"
     volumes:
-      - ./haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+      - ./haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    depends_on:
+      - pg-node1
+      - pg-node2
+      - pg-node3
